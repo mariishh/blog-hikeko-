@@ -1,0 +1,15 @@
+# Accesstoken - eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY3MjYxY2IyNTJlMTE1ZjQ2MjRmYzIxOSIsImlhdCI6MTczMDY1MjcyN30.jQab_KT0tzWXUfvNziq0SbwhG5Ixeh4HG3-9OE8rRak
+#POST http://localhost:3000/signin
+#Content-Type: application/json
+
+#{
+#    "fullname": "Hikeko",
+#   "email": "hikeko@gmail.com",
+#    "password": "Hikeko123"
+#}
+POST  http://localhost:3000/search-blogs
+Content-Type: application/json
+
+{
+    "tag": "tag1"
+}
