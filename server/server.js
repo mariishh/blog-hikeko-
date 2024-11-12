@@ -6,31 +6,35 @@ import { nanoid } from 'nanoid';
 import jwt from 'jsonwebtoken';
 import cors from 'cors';
 import aws from 'aws-sdk';
-import Blog from './Schema/Blog.js'; // Adjust the path as needed
 
-// Schema imports
+//Scheme 
+import Blog from './Schema/Blog.js';
 import User from './Schema/User.js';
+import Notification from './Schema/Notification.js';
+import Comment from "./Schema/Comment.js";
 
 const server = express();
-let PORT = 3000;
+let PORT = process.env.PORT || 3000; // Default to 3000 or use environment variable
 
-let emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/; // regex for email
-let passwordRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,20}$/; // regex for password
+const emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
+const passwordRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,20}$/;
 
 server.use(express.json());
 server.use(cors());
 
-mongoose.connect(process.env.DB_LOCATION, {
-    autoIndex: true,
-});
+// MongoDB connection
+mongoose.connect(process.env.DB_LOCATION, { autoIndex: true })
+  .then(() => console.log('Database connected successfully'))
+  .catch((err) => console.error('Database connection error:', err));
 
-// Setting up S3 bucket
+// AWS S3 Setup
 const s3 = new aws.S3({
     region: 'ap-south-1',
     accessKeyId: process.env.AWS_ACCESS_KEY,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
 });
 
+// Helper function to generate an S3 upload URL
 const generateUploadURL = async () => {
     const date = new Date();
     const imageName = `${nanoid()}-${date.getTime()}.jpeg`;
@@ -43,11 +47,12 @@ const generateUploadURL = async () => {
     });
 };
 
+// JWT Verification Middleware
 const verifyJWT = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
-    if (token === null) {
+    if (!token) {
         return res.status(401).json({ error: 'No access token' });
     }
 
@@ -61,6 +66,7 @@ const verifyJWT = (req, res, next) => {
     });
 };
 
+// User Profile Formatting
 const formatDatatoSend = (user) => {
     const access_token = jwt.sign({ id: user._id }, process.env.SECRET_ACCESS_KEY);
 
@@ -72,216 +78,271 @@ const formatDatatoSend = (user) => {
     };
 };
 
+// Generate Username for Signup
 const generateUsername = async (email) => {
     let username = email.split('@')[0];
-
     let isUsernameNotUnique = await User.exists({ 'personal_info.username': username }).then(
         (result) => result
     );
 
-    isUsernameNotUnique ? (username += nanoid().substring(0, 5)) : '';
+    if (isUsernameNotUnique) {
+        username += nanoid().substring(0, 5);
+    }
 
     return username;
 };
 
-// Upload image URL root
-server.get('/get-upload-url', (req, res) => {
-    generateUploadURL()
-        .then((url) => res.status(200).json({ uploadURL: url }))
-        .catch((err) => {
-            console.log(err.message);
-            return res.status(500).json({ error: err.message });
-        });
+// Routes
+
+// Upload image URL (AWS S3)
+server.get('/get-upload-url', async (req, res) => {
+    try {
+        const url = await generateUploadURL();
+        res.status(200).json({ uploadURL: url });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// User signup
-server.post('/signup', (req, res) => {
-    let { fullname, email, password } = req.body;
+// User Signup
+server.post('/signup', async (req, res) => {
+    const { fullname, email, password } = req.body;
 
-    // Validating the data from frontend
     if (fullname.length < 3) {
         return res.status(403).json({ error: 'Fullname must be at least 3 letters long' });
     }
-    if (!email.length) {
-        return res.status(403).json({ error: 'Enter email' });
-    }
-    if (!emailRegex.test(email)) {
-        return res.status(403).json({ error: 'Email is invalid' });
+    if (!email.length || !emailRegex.test(email)) {
+        return res.status(403).json({ error: 'Invalid email' });
     }
     if (!passwordRegex.test(password)) {
         return res.status(403).json({
-            error:
-                'Password should be 6 to 20 characters long with a numeric, 1 lowercase and 1 uppercase',
+            error: 'Password should be 6-20 characters long with a numeric, lowercase, and uppercase',
         });
     }
 
-    bcrypt.hash(password, 10, async (err, hashed_password) => {
-        let username = await generateUsername(email);
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const username = await generateUsername(email);
 
-        let user = new User({
-            personal_info: { fullname, email, password: hashed_password, username },
+        const newUser = new User({
+            personal_info: { fullname, email, password: hashedPassword, username },
         });
 
-        user
-            .save()
-            .then((u) => {
-                return res.status(200).json(formatDatatoSend(u));
-            })
-            .catch((err) => {
-                if (err.code == 11000) {
-                    return res.status(500).json({ error: 'Email already exists' });
-                }
-
-                return res.status(500).json({ error: err.message });
-            });
-    });
+        const savedUser = await newUser.save();
+        res.status(200).json(formatDatatoSend(savedUser));
+    } catch (err) {
+        if (err.code === 11000) {
+            return res.status(500).json({ error: 'Email already exists' });
+        }
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// User signin
-server.post('/signin', (req, res) => {
-    let { email, password } = req.body;
+// User Signin
+server.post('/signin', async (req, res) => {
+    const { email, password } = req.body;
 
-    User.findOne({ 'personal_info.email': email })
-        .then((user) => {
-            if (!user) {
-                return res.status(403).json({ error: 'Email not found' });
-            }
+    try {
+        const user = await User.findOne({ 'personal_info.email': email });
+        if (!user) {
+            return res.status(403).json({ error: 'Email not found' });
+        }
 
-            bcrypt.compare(password, user.personal_info.password, (err, result) => {
-                if (err) {
-                    return res.status(403).json({ error: 'Error occurred while login. Please try again' });
-                }
+        const match = await bcrypt.compare(password, user.personal_info.password);
+        if (!match) {
+            return res.status(403).json({ error: 'Incorrect Password' });
+        }
 
-                if (!result) {
-                    return res.status(403).json({ error: 'Incorrect Password' });
-                } else {
-                    return res.status(200).json(formatDatatoSend(user));
-                }
-            });
-        })
-        .catch((err) => {
-            console.log(err.message);
-            return res.status(500).json({ error: 'err.message' });
-        });
+        res.status(200).json(formatDatatoSend(user));
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: 'Error occurred during login' });
+    }
 });
 
 // Get latest blogs
-server.get('/latest-blogs', (req, res) => {
-    let { page = 1 } = req.body;
-    let maxLimit = 5;
+server.get('/latest-blogs', async (req, res) => {
+    const { page = 1, limit = 5 } = req.body;
 
-    Blog.find({ draft: false })
-        .populate('author', 'personal_info.profile_img personal_info.username personal_info.fullname -_id')
-        .sort({ publishedAt: -1 })
-        .select('blog_id title des banner activity tags publishedAt -_id')
-        .skip((page - 1) * maxLimit)
-        .limit(maxLimit)
-        .then((blogs) => {
-            return res.status(200).json({ blogs });
-        })
-        .catch((err) => {
-            return res.status(500).json({ error: err.message });
-        });
+    try {
+        const blogs = await Blog.find({ draft: false })
+            .populate('author', 'personal_info.profile_img personal_info.username personal_info.fullname -_id')
+            .sort({ publishedAt: -1 })
+            .select('blog_id title des banner activity tags publishedAt -_id')
+            .skip((page - 1) * limit)
+            .limit(limit);
+
+        res.status(200).json({ blogs });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Get the count of all latest blogs
-server.get('/all-latest-blogs-count', (req, res) => {
-    Blog.countDocuments({ draft: false })
-        .then((count) => {
-            return res.status(200).json({ totalDocs: count });
-        })
-        .catch((err) => {
-            console.log(err.message);
-            return res.status(500).json({ error: err.message });
-        });
-});
+// Create a blog
+server.post('/create-blog', verifyJWT, async (req, res) => {
+    const authorId = req.user;
+    const { title, des, banner, tags, content, draft } = req.body;
 
-// Get trending blogs
-server.get('/trending-blogs', (req, res) => {
-    let maxLimit = 5;
-
-    Blog.find({ draft: false })
-        .populate('author', 'personal_info.profile_img personal_info.username personal_info.fullname -_id')
-        .sort({ 'activity.total_read': -1, 'activity.total_likes': -1, publishedAt: -1 })
-        .select('blog_id title publishedAt -_id')
-        .limit(maxLimit)
-        .then((blogs) => {
-            return res.status(200).json({ blogs });
-        })
-        .catch((err) => {
-            return res.status(500).json({ error: err.message });
-        });
-});
-
-// Search for blogs
-server.post('/search-blogs', (req, res) => {
-    let { tag, query, author, page = 1 } = req.body;
-    let findQuery = { draft: false };
-
-    if (tag) {
-        findQuery.tags = tag;
-    } else if (query) {
-        findQuery.title = new RegExp(query, 'i');
-    } else if (author) {
-        findQuery.author = author;
+    if (!title) return res.status(403).json({ error: "You must provide a title" });
+    if (!draft) {
+        if (!des || des.length > 200) return res.status(403).json({ error: "Description is required and under 200 characters" });
+        if (!banner) return res.status(403).json({ error: "Banner is required to publish the post" });
+        if (!content.blocks || content.blocks.length === 0) return res.status(403).json({ error: "Content is required to publish the post" });
+        if (!tags || tags.length > 10) return res.status(403).json({ error: "Provide up to 10 tags" });
     }
 
-    let maxLimit = 5;
+    const blog_id = `${title.replace(/[^a-zA-Z0-9]/g, ' ').trim().replace(/\s+/g, "-")}-${nanoid()}`;
 
-    Blog.find(findQuery)
-        .populate('author', 'personal_info.profile_img personal_info.username personal_info.fullname -_id')
-        .sort({ 'activity.total_read': -1, 'activity.total_likes': -1, publishedAt: -1 })
-        .select('blog_id title des banner activity tags publishedAt -_id')
-        .skip((page - 1) * maxLimit)
-        .limit(maxLimit)
-        .then((blogs) => {
-            return res.status(200).json({ blogs });
-        })
-        .catch((err) => {
-            return res.status(500).json({ error: err.message });
-        });
+    try {
+        const newBlog = new Blog({ title, des, banner, content, tags: tags.map(tag => tag.toLowerCase()), author: authorId, blog_id, draft });
+        const savedBlog = await newBlog.save();
+
+        const incrementVal = draft ? 0 : 1;
+        await User.findByIdAndUpdate(authorId, { $inc: { "account_info.total_posts": incrementVal }, $push: { "blogs": savedBlog._id } });
+
+        res.status(200).json({ id: savedBlog.blog_id });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Count search blogs
-server.post('/search-blogs-count', (req, res) => {
-    let { tag, author, query } = req.body;
+// Get blog by ID (with incrementing read count)
+server.post("/get-blog", async (req, res) => {
+    const { blog_id } = req.body;
 
-    let findQuery = {};
+    if (!blog_id) return res.status(400).json({ error: "Blog ID is required" });
 
-    if (tag) {
-        findQuery.tags = tag;
-    } else if (query) {
-        findQuery.title = new RegExp(query, 'i');
-    } else if (author) {
-        findQuery.author = author;
+    try {
+        const blog = await Blog.findOneAndUpdate({ blog_id }, { $inc: { "activity.total_reads": 1 } })
+            .populate("author", "personal_info.fullname personal_info.username personal_info.profile_img")
+            .select("title des content banner activity publishedAt blog_id tags");
+
+        if (!blog) return res.status(404).json({ error: "Blog not found" });
+
+        await User.findOneAndUpdate({ "personal_info.username": blog.author.personal_info.username }, { $inc: { "account_info.total_reads": 1 } });
+
+        res.status(200).json({ blog });
+    } catch (err) {
+        console.error("Error finding/updating blog:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
+// Get total documents for pagination (e.g., for blog posts or comments)
+server.post('/get-pagination-data', async (req, res) => {
+    const { modelName, filter } = req.body; // You can pass the model name and filter parameters to make it dynamic
+
+    if (!modelName) {
+        return res.status(400).json({ error: "Model name is required" });
     }
 
-    Blog.countDocuments(findQuery)
-        .then((count) => {
-            return res.status(200).json({ totalDocs: count });
+    try {
+        // Dynamically select the model
+        const Model = mongoose.model(modelName);
+        
+        // Get the total document count based on the filter (you can add more filters as needed)
+        const totalDocs = await Model.countDocuments(filter || {});
+
+        res.status(200).json({ totalDocs });
+    } catch (err) {
+        console.error("Error fetching pagination data:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
+
+
+// Search blogs by tag (excluding the current blog)
+server.post('/search-blogs', async (req, res) => {
+    const { tag, limit, eliminate_blog } = req.body;
+
+    // Validate inputs
+    if (!tag) return res.status(400).json({ error: 'Tag is required' });
+
+    try {
+        // Fetch blogs based on tag, excluding the blog with the given ID
+        const blogs = await Blog.find({ tags: tag, draft: false, blog_id: { $ne: eliminate_blog } })
+            .populate('author', 'personal_info.profile_img personal_info.username personal_info.fullname -_id')
+            .limit(limit)
+            .select('blog_id title des banner activity publishedAt -_id');
+
+        res.status(200).json({ blogs });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+server.post("/isliked-by-user", (req, res) => {
+    const { _id: blogId } = req.body;
+    const userId = req.user.id; // Assuming you have user information from middleware or token
+
+    Like.findOne({ blog_id: blogId, user_id: userId })
+        .then(like => {
+            res.status(200).json({ result: !!like }); // true if like exists, false otherwise
         })
-        .catch((err) => {
-            console.log(err.message);
-            return res.status(500).json({ error: err.message });
+        .catch(err => {
+            console.error("Error checking like status:", err);
+            res.status(500).json({ error: "Error checking like status" });
         });
 });
 
-// Search for users
-server.post('/search-users', (req, res) => {
-    let { query } = req.body;
+server.post("/add-comment", verifyJWT, (req, res) => {
+    let user_id = req.user;
+    let { _id, comment, blog_author } = req.body;
+  
+    if (!comment.length) {
+      return res.status(403).json({ error: "Write something to leave a comment" });
+    }
+  
+    let commentObj = new Comment ({
+        blog_id: _id, blog_author, comment, commented_by: user_id,
+    })
+    commentObj.save().then(commentFile => {
+        let { comment, commentedAt, children } = commentFile;
+      
+        Blog.findOneAndUpdate({ _id }, { $push: { "comments": commentFile._id }, $inc: { "activity.total_comments": 1, "activity.total_parent_comments": 1 } })
+          .then(blog => { console.log('New comment created'); });
+      
+        let notificationObj = {
+          type: "comment",
+          blog: _id,
+          notification_for: blog_author,
+          user: user_id,
+          comment: commentFile._id
+        };
+        new Notification(notificationObj).save().then(notification => console.log('new notification created'));
 
-    User.find({ 'personal_info.username': new RegExp(query, 'i') })
-        .limit(50)
-        .select('personal_info.fullname personal_info.username personal_info.profile_img')
-        .then((users) => {
-            return res.status(200).json({ users });
+        return res.status(200).json({
+            comment,commentedAt, _id: commentFile._id, user_id, children
         })
-        .catch((err) => {
-            return res.status(500).json({ error: err.message });
-        });
+    })
+
+  })
+
+  server.post("/get-blog-comments", (req, res) => {
+    let { blog_id, skip } = req.body;
+  
+    let maxLimit = 5;
+  
+    Comment.find({ blog_id, isReply: false })
+    .populate("commented_by", "personal_info.username personal_info.fullname personal_info.profile_img")
+    .skip(skip)
+    .limit(maxLimit)
+    .sort({
+        commentedAt: -1
+    })
+    .then(comments => {
+        return res.status(200).json(comments); // Fixed variable name
+    })
+    .catch(err => {
+        console.log(err.message);
+        return res.status(500).json({ error: err.message });
+    });
 });
 
-// Server listener
+ 
+// Server listening
 server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });

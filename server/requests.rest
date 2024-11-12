@@ -7,9 +7,9 @@
 #   "email": "hikeko@gmail.com",
 #    "password": "Hikeko123"
 #}
-POST  http://localhost:3000/search-blogs
+POST  http://localhost:3000/get-profile
 Content-Type: application/json
 
 {
-    "tag": "tag1"
+    "username": "hikeko"
 }

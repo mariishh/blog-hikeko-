@@ -8,6 +8,7 @@ import HomePage from "./pages/home.page";
 import SearchPage from "./pages/search.page";
 import PageNotFound from "./pages/404.page";
 import ProfilePage from "./pages/profile.page";
+import BlogPage from "./pages/blog.page";
 
 // Context to manage user state
 export const UserContext = createContext({});
@@ -27,7 +28,7 @@ const App = () => {
       }
     } catch (error) {
       console.error("Error parsing user session:", error);
-      setUserAuth({ isAuthenticated: false, access_token: null }); // Set default on error
+      setUserAuth({ isAuthenticated: false, access_token: null }); // Default on error
     }
   }, []);
 
@@ -40,7 +41,8 @@ const App = () => {
           <Route path="signin" element={<UserAuthForm type="sign-in" />} />
           <Route path="signup" element={<UserAuthForm type="sign-up" />} />
           <Route path="search/:query" element={<SearchPage />} />
-          <Route path="user/:id" element={<ProfilePage />} /> {/* Profile route */}
+          <Route path="user/:id" element={<ProfilePage />} />
+          <Route path="blog/:blog_id" element={<BlogPage/>} />
           <Route path="*" element={<PageNotFound />} />
         </Route>
       </Routes>
